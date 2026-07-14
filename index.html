@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DM Restore — восстановление DataMatrix «Честного знака»</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header>
+  <h1>DM Restore</h1>
+  <p class="sub">Восстановление повреждённых DataMatrix-кодов маркировки (пиво / «Честный знак»). Локально в браузере.</p>
+</header>
+
+<main>
+  <section class="card drop" id="drop">
+    <input type="file" id="file" accept="image/*" hidden />
+    <input type="file" id="camera" accept="image/*" capture="environment" hidden />
+    <p><button id="cameraBtn" class="camera-btn">📷 Сфотографировать код</button></p>
+    <p>или перетащите фото сюда / <button id="pickBtn" class="link">выберите файл</button></p>
+    <p class="hint">Снимайте код крупно, без бликов, перпендикулярно.</p>
+  </section>
+
+  <section class="card" id="workspace" hidden>
+    <div class="canvases">
+      <figure>
+        <figcaption>Оригинал</figcaption>
+        <canvas id="src"></canvas>
+      </figure>
+      <figure>
+        <figcaption>После препроцессинга</figcaption>
+        <canvas id="dst"></canvas>
+      </figure>
+    </div>
+
+    <div class="controls">
+      <label>Яркость <span id="brightnessV">0</span>
+        <input type="range" id="brightness" min="-100" max="100" value="0" />
+      </label>
+      <label>Контраст <span id="contrastV">0</span>
+        <input type="range" id="contrast" min="-100" max="200" value="0" />
+      </label>
+      <label>Резкость <span id="sharpenV">0</span>
+        <input type="range" id="sharpen" min="0" max="5" step="0.1" value="0" />
+      </label>
+      <label>Размытие (px) <span id="blurV">0</span>
+        <input type="range" id="blur" min="0" max="5" step="0.5" value="0" />
+      </label>
+      <label>Порог бинаризации <span id="thresholdV">авто</span>
+        <input type="range" id="threshold" min="0" max="255" value="128" disabled />
+      </label>
+      <label class="row">
+        <input type="checkbox" id="binarize" /> Бинаризация
+      </label>
+      <label class="row">
+        <input type="checkbox" id="adaptive" checked /> Адаптивный порог (Sauvola-like)
+      </label>
+      <label class="row">
+        <input type="checkbox" id="invert" /> Инвертировать
+      </label>
+      <label>Поворот ° <span id="rotateV">0</span>
+        <input type="range" id="rotate" min="0" max="360" step="5" value="0" />
+      </label>
+      <label>Масштаб <span id="scaleV">1.0×</span>
+        <input type="range" id="scale" min="0.5" max="4" step="0.1" value="1.5" />
+      </label>
+    </div>
+
+    <div class="actions">
+      <button id="decode" class="primary">Распознать</button>
+      <button id="autoTry">Авто-перебор препроцессов</button>
+      <button id="scanView" class="scan-cta" hidden>📱 Показать код для сканирования</button>
+      <button id="reset">Сбросить</button>
+      <button id="newFile">Другое фото</button>
+    </div>
+
+    <div id="status" class="status"></div>
+
+    <div id="result" class="result" hidden>
+      <h2>Результат</h2>
+      <pre id="raw"></pre>
+      <h3>Разбор GS1</h3>
+      <table id="parsed"><tbody></tbody></table>
+      <p class="hint">
+        Проверить статус кода в обороте можно через ЛК «Честного знака» или мобильное приложение —
+        сверкой по GTIN + серийному номеру. Локальная программа подпись ЦРПТ не валидирует.
+      </p>
+    </div>
+  </section>
+
+  <section class="card hint-card">
+    <h3>Как пользоваться</h3>
+    <ol>
+      <li>Сфотографируйте код крупно, без бликов, перпендикулярно.</li>
+      <li>Если декодер с первой попытки не справился — нажмите «Авто-перебор» (программа прогонит ~30 комбинаций фильтров).</li>
+      <li>Если код декодировался — программа покажет GTIN, серийный номер и крипто-хвост.</li>
+      <li>Нажмите «Показать код для сканирования» — программа выведет на весь экран восстановленный код (перекодированный из считанных данных) или очищенное фото. Наведите сканер кассы прямо на экран телефона.</li>
+      <li>Если данные не считываются даже после перебора — повреждение скорее всего больше 25–30% модулей (предел Reed–Solomon в ECC 200), и восстановить нечего: считать данные не удалось. Легальный путь — перемаркировка в «Честном знаке».</li>
+    </ol>
+  </section>
+</main>
+
+<footer>
+  <p>Работает оффлайн. Декодер: <a href="https://github.com/zxing-js/library" target="_blank" rel="noopener">@zxing/library</a>.</p>
+</footer>
+
+<!-- Полноэкранный режим показа кода для сканирования с экрана -->
+<div id="scanOverlay" class="scan-overlay" hidden>
+  <p id="scanMode" class="scan-mode"></p>
+  <canvas id="scanCanvas"></canvas>
+  <p class="scan-hint">Наведите сканер кассы на код. Поставьте яркость экрана на максимум.</p>
+  <div class="scan-buttons">
+    <button id="scanToggle" class="scan-toggle" hidden></button>
+    <button id="scanClose" class="scan-close">Закрыть</button>
+  </div>
+</div>
+
+<!-- ZXing для DataMatrix (UMD-сборка) -->
+<script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
