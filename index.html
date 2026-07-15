@@ -24,7 +24,7 @@
   <section class="card" id="workspace" hidden>
     <div class="canvases">
       <figure>
-        <figcaption>Оригинал</figcaption>
+        <figcaption>Оригинал — обведите код пальцем или мышью</figcaption>
         <canvas id="src"></canvas>
       </figure>
       <figure>
@@ -70,6 +70,7 @@
       <button id="decode" class="primary">Распознать</button>
       <button id="autoTry">Авто-перебор препроцессов</button>
       <button id="scanView" class="scan-cta" hidden>📱 Показать код для сканирования</button>
+      <button id="clearSel" hidden>Сбросить выделение</button>
       <button id="reset">Сбросить</button>
       <button id="newFile">Другое фото</button>
     </div>
@@ -107,6 +108,11 @@
 <!-- Полноэкранный режим показа кода для сканирования с экрана -->
 <div id="scanOverlay" class="scan-overlay" hidden>
   <p id="scanMode" class="scan-mode"></p>
+  <div id="scanWarn" class="scan-warn" hidden>
+    ⚠️ Программе не удалось распознать код, читаемость <b>не подтверждена</b>.
+    Показан максимально очищенный вариант — он может не отсканироваться.
+    Если касса не берёт код, нажмите «Авто-перебор» или переснимите фото крупнее и без бликов.
+  </div>
   <canvas id="scanCanvas"></canvas>
   <p class="scan-hint">Наведите сканер кассы на код. Поставьте яркость экрана на максимум.</p>
   <div class="scan-buttons">

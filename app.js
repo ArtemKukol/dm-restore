@@ -30,6 +30,7 @@
   const autoBtn    = $('autoTry');
   const resetBtn   = $('reset');
   const newFileBtn = $('newFile');
+  const clearSelBtn = $('clearSel');
 
   const cameraBtn   = $('cameraBtn');
   const cameraInput = $('camera');
@@ -39,12 +40,17 @@
   const scanCloseBtn = $('scanClose');
   const scanModeLabel = $('scanMode');
   const scanToggleBtn = $('scanToggle');
+  const scanWarn = $('scanWarn');
 
   let originalImage = null;     // ImageData
   let originalBitmap = null;    // ImageBitmap (для поворота/масштаба)
   let lastDecode = null;        // { text, format, points:[{x,y}] } — данные последнего успешного распознавания
-  let scanImages = { regen: null, photo: null }; // изображения для показа: восстановленное и очищенное фото
+  let scanImages = { regen: null, photo: null, best: null }; // варианты для показа
   let scanMode = 'regen';       // какой вариант сейчас на экране
+  let scanVerified = true;      // подтвердила ли программа читаемость (декодировала код)
+  let selection = null;         // выделенная область кода в пикселях оригинала {x,y,w,h} или null
+  let selDrag = null;           // временное состояние во время обводки
+  let workingCache = null;      // кэш обрезанного по выделению изображения
 
   // ---------- UI: дроп-зона ----------
   function bindDrop() {
@@ -87,8 +93,11 @@
     originalImage = oc.getImageData(0, 0, w, h);
     originalBitmap = bmp;
 
+    selection = null;
+    selDrag = null;
+    clearSelBtn.hidden = true;
     srcCanvas.width = w; srcCanvas.height = h;
-    srcCanvas.getContext('2d').putImageData(originalImage, 0, 0);
+    drawSrc();
 
     workspace.hidden = false;
     resultEl.hidden = true;
@@ -101,8 +110,110 @@
     if (tryDecode()) {
       setStatus('Код распознан. Нажмите «Показать код для сканирования».', 'ok');
     } else {
-      setStatus('Готово. Нажмите «Авто-перебор» — программа сама подберёт фильтры.');
+      setStatus('Готово. Нажмите «Авто-перебор» — программа сама подберёт фильтры. Можно и сразу показать лучший вариант (без гарантии).');
     }
+    refreshScanBtn();
+  }
+
+  // ---------- Выделение области кода (обводка пальцем/мышью) ----------
+  // Рисуем оригинал и, если есть выделение или идёт обводка, поверх — рамку.
+  function drawSrc() {
+    if (!originalImage) return;
+    const cx = srcCanvas.getContext('2d');
+    cx.putImageData(originalImage, 0, 0);
+    const box = selDrag ? dragToBox(selDrag) : selection;
+    if (box && box.w > 0 && box.h > 0) {
+      cx.save();
+      cx.strokeStyle = '#4f8cff';
+      cx.lineWidth = Math.max(2, srcCanvas.width / 300);
+      cx.fillStyle = 'rgba(79,140,255,0.15)';
+      cx.fillRect(box.x, box.y, box.w, box.h);
+      cx.strokeRect(box.x, box.y, box.w, box.h);
+      cx.restore();
+    }
+  }
+
+  // Координаты указателя → пиксели канваса (они же пиксели оригинала).
+  function pointerToCanvas(e) {
+    const rect = srcCanvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (srcCanvas.width / rect.width);
+    const y = (e.clientY - rect.top) * (srcCanvas.height / rect.height);
+    return {
+      x: Math.max(0, Math.min(srcCanvas.width, x)),
+      y: Math.max(0, Math.min(srcCanvas.height, y)),
+    };
+  }
+
+  function dragToBox(d) {
+    return {
+      x: Math.min(d.x0, d.x1),
+      y: Math.min(d.y0, d.y1),
+      w: Math.abs(d.x1 - d.x0),
+      h: Math.abs(d.y1 - d.y0),
+    };
+  }
+
+  function bindSelection() {
+    srcCanvas.addEventListener('pointerdown', (e) => {
+      if (!originalImage) return;
+      const p = pointerToCanvas(e);
+      selDrag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+      try { srcCanvas.setPointerCapture(e.pointerId); } catch (_) {}
+    });
+    srcCanvas.addEventListener('pointermove', (e) => {
+      if (!selDrag) return;
+      const p = pointerToCanvas(e);
+      selDrag.x1 = p.x; selDrag.y1 = p.y;
+      drawSrc();
+    });
+    srcCanvas.addEventListener('pointerup', (e) => {
+      if (!selDrag) return;
+      const box = dragToBox(selDrag);
+      selDrag = null;
+      workingCache = null;
+      // Слишком маленькая рамка — считаем случайным тапом, снимаем выделение.
+      if (box.w < 12 || box.h < 12) {
+        selection = null;
+        clearSelBtn.hidden = true;
+      } else {
+        selection = box;
+        clearSelBtn.hidden = false;
+      }
+      drawSrc();
+      applyAfterSelectionChange();
+    });
+  }
+
+  // Область для обработки: выделение (обрезанное из оригинала) или весь оригинал.
+  function getWorkingImage() {
+    if (!selection) return originalImage;
+    if (workingCache) return workingCache;
+    const s = selection;
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(s.w));
+    c.height = Math.max(1, Math.round(s.h));
+    const cx = c.getContext('2d');
+    const tmp = document.createElement('canvas');
+    tmp.width = originalImage.width; tmp.height = originalImage.height;
+    tmp.getContext('2d').putImageData(originalImage, 0, 0);
+    cx.drawImage(tmp, s.x, s.y, s.w, s.h, 0, 0, c.width, c.height);
+    workingCache = cx.getImageData(0, 0, c.width, c.height);
+    return workingCache;
+  }
+
+  // После изменения выделения: пересчитываем препроцесс и пробуем распознать.
+  function applyAfterSelectionChange() {
+    lastDecode = null;
+    resultEl.hidden = true;
+    applyPreprocess();
+    if (tryDecode()) {
+      setStatus(selection ? 'Код распознан по выделенной области.' : 'Код распознан.', 'ok');
+    } else {
+      setStatus(selection
+        ? 'По выделению распознать не удалось. Попробуйте «Авто-перебор» или покажите лучший вариант (без гарантии).'
+        : 'Выделение снято. По полному кадру распознать не удалось — попробуйте «Авто-перебор» или обведите код заново.', 'warn');
+    }
+    refreshScanBtn();
   }
 
   // ---------- Препроцессинг ----------
@@ -136,7 +247,7 @@
     if (!originalImage) return;
     const p = readParams();
     refreshLabels();
-    const out = preprocess(originalImage, p);
+    const out = preprocess(getWorkingImage(), p);
     dstCanvas.width = out.width;
     dstCanvas.height = out.height;
     dstCanvas.getContext('2d').putImageData(out, 0, 0);
@@ -384,12 +495,13 @@
     }
 
     autoBtn.disabled = false; decodeBtn.disabled = false;
-    setStatus('Не удалось декодировать. Повреждение, скорее всего, превышает возможности Reed–Solomon. Попробуйте более качественное фото или ручные настройки.', 'err');
+    setStatus('Не удалось декодировать. Повреждение, скорее всего, превышает возможности Reed–Solomon. Можно показать лучший вариант (без гарантии), сделать более качественное фото или подстроить фильтры вручную.', 'err');
+    refreshScanBtn();
   }
 
   function onDecoded(text, format) {
     resultEl.hidden = false;
-    scanViewBtn.hidden = false;
+    refreshScanBtn();
     rawEl.textContent = text;
     parsedTbody.innerHTML = '';
     setStatus(`Распознано (${format}).`, 'ok');
@@ -457,26 +569,56 @@
   }
 
   // ---------- Показ кода для сканирования с экрана ----------
+  // Кнопка показа видна всегда после загрузки фото; подпись зависит от того,
+  // распознан код (подтверждённый вариант) или нет (лучший вариант без гарантии).
+  function refreshScanBtn() {
+    scanViewBtn.hidden = !originalImage;
+    scanViewBtn.textContent = lastDecode
+      ? '📱 Показать код для сканирования'
+      : '📱 Показать лучший вариант (без гарантии)';
+  }
+
   function showScanView() {
-    // Строим оба варианта: восстановленный из считанных данных и очищенное фото.
-    scanImages.regen = regenerateFromData();
-    scanImages.photo = buildScanImage();
-    if (!scanImages.regen && !scanImages.photo) {
-      setStatus('Сначала распознайте код — потом его можно показать для сканирования.', 'warn');
+    if (!originalImage) {
+      setStatus('Сначала загрузите или сфотографируйте код.', 'warn');
       return;
     }
-    // По умолчанию показываем восстановленный код — он всегда чёткий и читается надёжнее.
-    scanMode = scanImages.regen ? 'regen' : 'photo';
+    // Подтверждённые варианты — только если код реально декодирован.
+    scanImages.regen = regenerateFromData();
+    scanImages.photo = buildScanImage();
+    scanImages.best = null;
+    scanVerified = !!(scanImages.regen || scanImages.photo);
+
+    if (scanVerified) {
+      // По умолчанию показываем восстановленный код — он всегда чёткий и читается надёжнее.
+      scanMode = scanImages.regen ? 'regen' : 'photo';
+    } else {
+      // Код не распознан: готовим максимально очищенный вариант и предупредим.
+      scanImages.best = buildBestEffortImage();
+      if (!scanImages.best) {
+        setStatus('Не удалось подготовить изображение для показа.', 'err');
+        return;
+      }
+      scanMode = 'best';
+    }
     renderScan();
     scanOverlay.hidden = false;
   }
 
-  // Рисуем выбранный вариант на экране и обновляем подпись/кнопку переключения.
+  // Рисуем выбранный вариант на экране и обновляем подпись/предупреждение/переключатель.
   function renderScan() {
-    const img = scanImages[scanMode] || scanImages.regen || scanImages.photo;
+    const img = scanImages[scanMode];
     scanCanvas.width = img.width;
     scanCanvas.height = img.height;
     scanCanvas.getContext('2d').putImageData(img, 0, 0);
+
+    scanWarn.hidden = scanVerified;
+
+    if (!scanVerified) {
+      scanModeLabel.textContent = 'Лучший из возможных вариантов (программой не распознан)';
+      scanToggleBtn.hidden = true;
+      return;
+    }
 
     const bothAvailable = scanImages.regen && scanImages.photo;
     scanModeLabel.textContent = scanMode === 'regen'
@@ -486,6 +628,17 @@
     scanToggleBtn.textContent = scanMode === 'regen'
       ? 'Показать очищенное фото'
       : 'Показать восстановленный';
+  }
+
+  // Лучший вариант без распознавания: код не найден по координатам, поэтому
+  // берём весь очищенный кадр, приводим к чистому ч/б и добавляем белое поле.
+  function buildBestEffortImage() {
+    if (!originalImage || !dstCanvas.width) return null;
+    const whole = { x: 0, y: 0, w: dstCanvas.width, h: dstCanvas.height };
+    const crop = cropCanvas(dstCanvas, whole);
+    const bw = otsuBinary(crop);
+    const pad = Math.max(16, Math.round(Math.max(bw.width, bw.height) * 0.08));
+    return addQuietZone(bw, pad);
   }
 
   function toggleScanMode() {
@@ -636,6 +789,12 @@
     scanViewBtn.addEventListener('click', showScanView);
     scanCloseBtn.addEventListener('click', hideScanView);
     scanToggleBtn.addEventListener('click', toggleScanMode);
+    clearSelBtn.addEventListener('click', () => {
+      selection = null; selDrag = null; workingCache = null;
+      clearSelBtn.hidden = true;
+      drawSrc();
+      applyAfterSelectionChange();
+    });
     resetBtn.addEventListener('click', () => {
       ctlBrightness.value = 0;
       ctlContrast.value = 0;
@@ -655,8 +814,12 @@
       resultEl.hidden = true;
       scanViewBtn.hidden = true;
       scanOverlay.hidden = true;
+      clearSelBtn.hidden = true;
       lastDecode = null;
       originalImage = null;
+      selection = null;
+      selDrag = null;
+      workingCache = null;
       file.value = '';
       cameraInput.value = '';
       setStatus('');
@@ -670,6 +833,7 @@
     }
     bindDrop();
     bindControls();
+    bindSelection();
     refreshLabels();
   }
 
