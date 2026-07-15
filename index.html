@@ -24,8 +24,16 @@
   <section class="card" id="workspace" hidden>
     <div class="canvases">
       <figure>
-        <figcaption>Оригинал — обведите код пальцем или мышью</figcaption>
-        <canvas id="src"></canvas>
+        <figcaption>Оригинал — двигайте рамку на код, тяните за углы</figcaption>
+        <div class="crop-wrap" id="cropWrap">
+          <canvas id="src"></canvas>
+          <div class="crop-frame" id="cropFrame" hidden>
+            <span class="crop-handle" data-h="nw"></span>
+            <span class="crop-handle" data-h="ne"></span>
+            <span class="crop-handle" data-h="sw"></span>
+            <span class="crop-handle" data-h="se"></span>
+          </div>
+        </div>
       </figure>
       <figure>
         <figcaption>После препроцессинга</figcaption>
@@ -70,7 +78,7 @@
       <button id="decode" class="primary">Распознать</button>
       <button id="autoTry">Авто-перебор препроцессов</button>
       <button id="scanView" class="scan-cta" hidden>📱 Показать код для сканирования</button>
-      <button id="clearSel" hidden>Сбросить выделение</button>
+      <button id="clearSel" hidden>Рамка на весь кадр</button>
       <button id="reset">Сбросить</button>
       <button id="newFile">Другое фото</button>
     </div>

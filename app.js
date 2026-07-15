@@ -41,6 +41,8 @@
   const scanModeLabel = $('scanMode');
   const scanToggleBtn = $('scanToggle');
   const scanWarn = $('scanWarn');
+  const cropWrap = $('cropWrap');
+  const cropFrame = $('cropFrame');
 
   let originalImage = null;     // ImageData
   let originalBitmap = null;    // ImageBitmap (для поворота/масштаба)
@@ -48,8 +50,8 @@
   let scanImages = { regen: null, photo: null, best: null }; // варианты для показа
   let scanMode = 'regen';       // какой вариант сейчас на экране
   let scanVerified = true;      // подтвердила ли программа читаемость (декодировала код)
-  let selection = null;         // выделенная область кода в пикселях оригинала {x,y,w,h} или null
-  let selDrag = null;           // временное состояние во время обводки
+  let selection = null;         // область кода в пикселях оригинала {x,y,w,h} или null (весь кадр)
+  let cropDrag = null;          // состояние во время перетаскивания рамки/угла
   let workingCache = null;      // кэш обрезанного по выделению изображения
 
   // ---------- UI: дроп-зона ----------
@@ -94,8 +96,8 @@
     originalBitmap = bmp;
 
     selection = null;
-    selDrag = null;
-    clearSelBtn.hidden = true;
+    cropDrag = null;
+    workingCache = null;
     srcCanvas.width = w; srcCanvas.height = h;
     drawSrc();
 
@@ -103,85 +105,130 @@
     resultEl.hidden = true;
     lastDecode = null;
     scanViewBtn.hidden = true;
+
+    setDefaultFrame();                 // рамка по центру — сразу как область обработки
+    clearSelBtn.hidden = !selection;
     applyPreprocess();
 
-    // Пробуем распознать сразу с настройками по умолчанию (адаптивный порог).
-    // Если не вышло — подсказываем нажать «Авто-перебор».
+    // Пробуем распознать сразу по области рамки.
     if (tryDecode()) {
       setStatus('Код распознан. Нажмите «Показать код для сканирования».', 'ok');
     } else {
-      setStatus('Готово. Нажмите «Авто-перебор» — программа сама подберёт фильтры. Можно и сразу показать лучший вариант (без гарантии).');
+      setStatus('Готово. Наведите рамку точно на код и/или нажмите «Авто-перебор». Можно сразу показать лучший вариант (без гарантии).');
     }
     refreshScanBtn();
   }
 
-  // ---------- Выделение области кода (обводка пальцем/мышью) ----------
-  // Рисуем оригинал и, если есть выделение или идёт обводка, поверх — рамку.
+  // ---------- Рамка обреза области кода ----------
   function drawSrc() {
     if (!originalImage) return;
-    const cx = srcCanvas.getContext('2d');
-    cx.putImageData(originalImage, 0, 0);
-    const box = selDrag ? dragToBox(selDrag) : selection;
-    if (box && box.w > 0 && box.h > 0) {
-      cx.save();
-      cx.strokeStyle = '#4f8cff';
-      cx.lineWidth = Math.max(2, srcCanvas.width / 300);
-      cx.fillStyle = 'rgba(79,140,255,0.15)';
-      cx.fillRect(box.x, box.y, box.w, box.h);
-      cx.strokeRect(box.x, box.y, box.w, box.h);
-      cx.restore();
+    srcCanvas.getContext('2d').putImageData(originalImage, 0, 0);
+  }
+
+  // Рамка по умолчанию: центральный квадрат ~70% меньшей стороны.
+  function setDefaultFrame() {
+    const dispW = cropWrap.clientWidth, dispH = cropWrap.clientHeight;
+    const side = Math.round(Math.min(dispW, dispH) * 0.7);
+    cropFrame.hidden = false;
+    applyFrameRect({ left: (dispW - side) / 2, top: (dispH - side) / 2, width: side, height: side });
+    updateSelectionFromFrame();
+  }
+
+  // Рамка на весь кадр (= обработка всего изображения).
+  function frameToFull() {
+    cropFrame.hidden = false;
+    applyFrameRect({ left: 0, top: 0, width: cropWrap.clientWidth, height: cropWrap.clientHeight });
+    selection = null;
+    workingCache = null;
+  }
+
+  function currentFrameRect() {
+    return { left: cropFrame.offsetLeft, top: cropFrame.offsetTop, width: cropFrame.offsetWidth, height: cropFrame.offsetHeight };
+  }
+
+  // Ставит рамку по прямоугольнику (дисплейные px), удерживая её в пределах кадра.
+  function applyFrameRect(r) {
+    const dispW = cropWrap.clientWidth, dispH = cropWrap.clientHeight;
+    const min = 30;
+    let width = Math.max(min, Math.min(r.width, dispW));
+    let height = Math.max(min, Math.min(r.height, dispH));
+    let left = Math.max(0, Math.min(r.left, dispW - width));
+    let top = Math.max(0, Math.min(r.top, dispH - height));
+    cropFrame.style.left = left + 'px';
+    cropFrame.style.top = top + 'px';
+    cropFrame.style.width = width + 'px';
+    cropFrame.style.height = height + 'px';
+  }
+
+  // Считываем положение рамки в selection (пиксели оригинала).
+  function updateSelectionFromFrame() {
+    const r = currentFrameRect();
+    const kx = srcCanvas.width / cropWrap.clientWidth;
+    const ky = srcCanvas.height / cropWrap.clientHeight;
+    const full = r.left <= 0 && r.top <= 0 &&
+      r.width >= cropWrap.clientWidth - 1 && r.height >= cropWrap.clientHeight - 1;
+    selection = full ? null : { x: r.left * kx, y: r.top * ky, w: r.width * kx, h: r.height * ky };
+    workingCache = null;
+  }
+
+  // Возвращает рамку на место после изменения размеров окна.
+  function layoutFrameFromSelection() {
+    if (cropFrame.hidden) return;
+    if (!selection) {
+      applyFrameRect({ left: 0, top: 0, width: cropWrap.clientWidth, height: cropWrap.clientHeight });
+      return;
     }
+    const kx = srcCanvas.width / cropWrap.clientWidth;
+    const ky = srcCanvas.height / cropWrap.clientHeight;
+    applyFrameRect({ left: selection.x / kx, top: selection.y / ky, width: selection.w / kx, height: selection.h / ky });
   }
 
-  // Координаты указателя → пиксели канваса (они же пиксели оригинала).
-  function pointerToCanvas(e) {
-    const rect = srcCanvas.getBoundingClientRect();
-    const x = (e.clientX - rect.left) * (srcCanvas.width / rect.width);
-    const y = (e.clientY - rect.top) * (srcCanvas.height / rect.height);
-    return {
-      x: Math.max(0, Math.min(srcCanvas.width, x)),
-      y: Math.max(0, Math.min(srcCanvas.height, y)),
-    };
-  }
+  function bindCrop() {
+    let cropRAF = 0;
 
-  function dragToBox(d) {
-    return {
-      x: Math.min(d.x0, d.x1),
-      y: Math.min(d.y0, d.y1),
-      w: Math.abs(d.x1 - d.x0),
-      h: Math.abs(d.y1 - d.y0),
-    };
-  }
-
-  function bindSelection() {
-    srcCanvas.addEventListener('pointerdown', (e) => {
+    const start = (e, mode) => {
       if (!originalImage) return;
-      const p = pointerToCanvas(e);
-      selDrag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
-      try { srcCanvas.setPointerCapture(e.pointerId); } catch (_) {}
+      e.preventDefault();
+      cropDrag = { mode, px: e.clientX, py: e.clientY, rect: currentFrameRect() };
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+    };
+
+    // Углы — ресайз, тело рамки — перемещение.
+    cropFrame.querySelectorAll('.crop-handle').forEach((h) => {
+      h.addEventListener('pointerdown', (e) => { e.stopPropagation(); start(e, h.dataset.h); });
     });
-    srcCanvas.addEventListener('pointermove', (e) => {
-      if (!selDrag) return;
-      const p = pointerToCanvas(e);
-      selDrag.x1 = p.x; selDrag.y1 = p.y;
-      drawSrc();
-    });
-    srcCanvas.addEventListener('pointerup', (e) => {
-      if (!selDrag) return;
-      const box = dragToBox(selDrag);
-      selDrag = null;
-      workingCache = null;
-      // Слишком маленькая рамка — считаем случайным тапом, снимаем выделение.
-      if (box.w < 12 || box.h < 12) {
-        selection = null;
-        clearSelBtn.hidden = true;
+    cropFrame.addEventListener('pointerdown', (e) => start(e, 'move'));
+
+    window.addEventListener('pointermove', (e) => {
+      if (!cropDrag) return;
+      e.preventDefault();
+      const dx = e.clientX - cropDrag.px, dy = e.clientY - cropDrag.py;
+      const o = cropDrag.rect;
+      let r;
+      if (cropDrag.mode === 'move') {
+        r = { left: o.left + dx, top: o.top + dy, width: o.width, height: o.height };
       } else {
-        selection = box;
-        clearSelBtn.hidden = false;
+        r = { left: o.left, top: o.top, width: o.width, height: o.height };
+        if (cropDrag.mode.includes('w')) { r.left = o.left + dx; r.width = o.width - dx; }
+        if (cropDrag.mode.includes('e')) { r.width = o.width + dx; }
+        if (cropDrag.mode.includes('n')) { r.top = o.top + dy; r.height = o.height - dy; }
+        if (cropDrag.mode.includes('s')) { r.height = o.height + dy; }
+        if (r.width < 30 && cropDrag.mode.includes('w')) r.left = o.left + o.width - 30;
+        if (r.height < 30 && cropDrag.mode.includes('n')) r.top = o.top + o.height - 30;
       }
-      drawSrc();
+      applyFrameRect(r);
+      updateSelectionFromFrame();
+      if (!cropRAF) cropRAF = requestAnimationFrame(() => { cropRAF = 0; applyPreprocess(); });
+    });
+
+    window.addEventListener('pointerup', () => {
+      if (!cropDrag) return;
+      cropDrag = null;
+      clearSelBtn.hidden = !selection;
       applyAfterSelectionChange();
     });
+
+    window.addEventListener('resize', layoutFrameFromSelection);
   }
 
   // Область для обработки: выделение (обрезанное из оригинала) или весь оригинал.
@@ -447,6 +494,42 @@
     }
   }
 
+  // Применяем комбинацию фильтров к контролам и пересчитываем препроцесс.
+  function applyCombo(c) {
+    ctlBinarize.checked = !!c.binarize;
+    ctlAdaptive.checked = !!c.adaptive;
+    ctlInvert.checked   = !!c.invert;
+    ctlContrast.value = c.contrast ?? 0;
+    ctlSharpen.value  = c.sharpen ?? 0;
+    ctlScale.value    = c.scale ?? 1.5;
+    applyPreprocess();
+  }
+
+  // Грубая оценка «похоже на чистый код»: доля чёрного близка к 50% и много переходов.
+  // Нужна, чтобы после неудачного перебора выбрать самый подходящий вариант.
+  function scoreCandidate() {
+    const w = dstCanvas.width, h = dstCanvas.height;
+    if (!w || !h) return -1;
+    const d = dstCanvas.getContext('2d').getImageData(0, 0, w, h).data;
+    const step = 2;
+    let black = 0, transitions = 0, count = 0;
+    for (let y = 0; y < h; y += step) {
+      let prev = -1;
+      const row = y * w;
+      for (let x = 0; x < w; x += step) {
+        const v = d[(row + x) * 4] < 128 ? 0 : 1;
+        if (v === 0) black++;
+        if (prev !== -1 && v !== prev) transitions++;
+        prev = v;
+        count++;
+      }
+    }
+    if (!count) return -1;
+    const balance = 1 - Math.abs(black / count - 0.5) * 2; // 1 при 50% чёрного
+    const density = transitions / count;                    // высокая у кодов
+    return balance * density;
+  }
+
   // Перебор сочетаний препроцессов
   async function autoTry() {
     setStatus('Перебираю комбинации фильтров…');
@@ -472,15 +555,11 @@
       }
     }
 
+    let best = { score: -1, apply: null };
+
     for (let i = 0; i < combos.length; i++) {
       const c = combos[i];
-      Object.assign(ctlBinarize, { checked: !!c.binarize });
-      Object.assign(ctlAdaptive, { checked: !!c.adaptive });
-      Object.assign(ctlInvert,   { checked: !!c.invert });
-      ctlContrast.value = c.contrast ?? 0;
-      ctlSharpen.value  = c.sharpen ?? 0;
-      ctlScale.value    = c.scale ?? 1.5;
-      applyPreprocess();
+      applyCombo(c);
       // Пара поворотов на каждый набор
       for (const rot of [0, 90, 180, 270]) {
         ctlRotate.value = rot;
@@ -489,13 +568,22 @@
           autoBtn.disabled = false; decodeBtn.disabled = false;
           return;
         }
+        // Не декодировалось — запоминаем самый «код-подобный» вариант.
+        const sc = scoreCandidate();
+        if (sc > best.score) {
+          best = { score: sc, apply: () => { applyCombo(c); ctlRotate.value = rot; applyPreprocess(); } };
+        }
         await new Promise(r => setTimeout(r, 0)); // не блокируем UI
       }
       if (i % 5 === 0) setStatus(`Перебираю комбинации фильтров… ${i + 1}/${combos.length}`);
     }
 
+    // Ничего не декодировалось — восстанавливаем самый подходящий вариант,
+    // чтобы «Показать лучший вариант» вывел именно его, а не последнюю случайную комбинацию.
+    if (best.apply) best.apply();
+
     autoBtn.disabled = false; decodeBtn.disabled = false;
-    setStatus('Не удалось декодировать. Повреждение, скорее всего, превышает возможности Reed–Solomon. Можно показать лучший вариант (без гарантии), сделать более качественное фото или подстроить фильтры вручную.', 'err');
+    setStatus('Декодировать не удалось. Выбран самый подходящий вариант — нажмите «📱 Показать лучший вариант (без гарантии)», чтобы вывести его на экран. Либо переснимите фото крупнее и без бликов.', 'warn');
     refreshScanBtn();
   }
 
@@ -747,7 +835,9 @@
     }
     const out = new Uint8ClampedArray(d.length);
     for (let j = 0, i = 0; j < gray.length; j++, i += 4) {
-      const v = gray[j] >= thr ? 255 : 0;
+      // Строго «>»: для уже бинарного входа порог Оцу вырождается в 0, и «>=»
+      // покрасил бы всё в белое. «>» корректно делит и бинарный, и серый вход.
+      const v = gray[j] > thr ? 255 : 0;
       out[i] = out[i + 1] = out[i + 2] = v; out[i + 3] = 255;
     }
     return new ImageData(out, w, h);
@@ -790,9 +880,8 @@
     scanCloseBtn.addEventListener('click', hideScanView);
     scanToggleBtn.addEventListener('click', toggleScanMode);
     clearSelBtn.addEventListener('click', () => {
-      selection = null; selDrag = null; workingCache = null;
+      frameToFull();
       clearSelBtn.hidden = true;
-      drawSrc();
       applyAfterSelectionChange();
     });
     resetBtn.addEventListener('click', () => {
@@ -815,10 +904,11 @@
       scanViewBtn.hidden = true;
       scanOverlay.hidden = true;
       clearSelBtn.hidden = true;
+      cropFrame.hidden = true;
       lastDecode = null;
       originalImage = null;
       selection = null;
-      selDrag = null;
+      cropDrag = null;
       workingCache = null;
       file.value = '';
       cameraInput.value = '';
@@ -833,7 +923,7 @@
     }
     bindDrop();
     bindControls();
-    bindSelection();
+    bindCrop();
     refreshLabels();
   }
 

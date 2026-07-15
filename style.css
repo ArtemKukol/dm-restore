@@ -73,10 +73,37 @@ main {
   display: block;
   border: 1px solid var(--border);
 }
-#src {
-  cursor: crosshair;
-  touch-action: none; /* чтобы обводка пальцем не прокручивала страницу */
+/* Обёртка с рамкой обреза */
+.crop-wrap {
+  position: relative;
+  display: block;
+  line-height: 0;
 }
+.crop-wrap canvas { display: block; width: 100%; }
+
+.crop-frame {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid var(--accent);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45); /* затемняем всё вокруг рамки */
+  cursor: move;
+  touch-action: none; /* палец двигает рамку, а не прокручивает страницу */
+}
+.crop-frame[hidden] { display: none; }
+
+.crop-handle {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  background: var(--accent);
+  border: 2px solid #fff;
+  border-radius: 50%;
+  touch-action: none;
+}
+.crop-handle[data-h="nw"] { left: -14px; top: -14px; cursor: nwse-resize; }
+.crop-handle[data-h="ne"] { right: -14px; top: -14px; cursor: nesw-resize; }
+.crop-handle[data-h="sw"] { left: -14px; bottom: -14px; cursor: nesw-resize; }
+.crop-handle[data-h="se"] { right: -14px; bottom: -14px; cursor: nwse-resize; }
 
 .controls {
   display: grid;
