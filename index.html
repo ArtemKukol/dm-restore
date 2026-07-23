@@ -17,8 +17,41 @@
     <input type="file" id="file" accept="image/*" hidden />
     <input type="file" id="camera" accept="image/*" capture="environment" hidden />
     <p><button id="cameraBtn" class="camera-btn">📷 Сфотографировать код</button></p>
+    <p><button id="liveScanBtn" class="camera-btn camera-btn-alt">🎥 Сканировать камерой</button></p>
     <p>или перетащите фото сюда / <button id="pickBtn" class="link">выберите файл</button></p>
     <p class="hint">Снимайте код крупно, без бликов, перпендикулярно.</p>
+  </section>
+
+  <section class="card" id="manualCard">
+    <details>
+      <summary>Уже есть данные кода? Сгенерировать чистый код без фото</summary>
+      <p class="hint">
+        Вставьте строку кода или отсканируйте её сканером / ТСД прямо в это поле —
+        программа сделает чистый GS1 DataMatrix для сканирования на кассе.
+      </p>
+      <textarea id="manualData" rows="3" placeholder="Например: 0104600000000000212112345678(GS)93Xk7Q"></textarea>
+      <div class="manual-actions">
+        <button id="manualGen" class="primary">Сгенерировать чистый код</button>
+      </div>
+    </details>
+  </section>
+
+  <section class="card" id="statsCard">
+    <details>
+      <summary>📊 Статистика сканирований (для отчётности)</summary>
+      <p class="stat-now">За текущий месяц: <strong id="statNow">0</strong></p>
+      <div class="stat-period">
+        <label>С <input type="month" id="statFrom" /></label>
+        <label>по <input type="month" id="statTo" /></label>
+        <span class="stat-total">Всего за период: <strong id="statPeriod">0</strong></span>
+        <button id="statCsv" class="link">Скачать CSV</button>
+      </div>
+      <table class="stat-table">
+        <thead><tr><th>Месяц</th><th>Сканирований</th></tr></thead>
+        <tbody id="statTable"></tbody>
+      </table>
+      <p class="hint">Считается каждый успешно восстановленный код, показанный для сканирования (повторный показ того же кода подряд счёт не удваивает). Данные хранятся на этом устройстве (localStorage).</p>
+    </details>
   </section>
 
   <section class="card" id="workspace" hidden>
@@ -113,6 +146,13 @@
   <p>Работает оффлайн. Декодер: <a href="https://github.com/zxing-js/library" target="_blank" rel="noopener">@zxing/library</a>.</p>
 </footer>
 
+<!-- Живое сканирование камерой -->
+<div id="camOverlay" class="cam-overlay" hidden>
+  <video id="camVideo" playsinline muted autoplay></video>
+  <p class="cam-hint">Наведите камеру на код. Держите ровно; при плохом свете — ближе.</p>
+  <button id="camStop" class="scan-close">Стоп</button>
+</div>
+
 <!-- Полноэкранный режим показа кода для сканирования с экрана -->
 <div id="scanOverlay" class="scan-overlay" hidden>
   <p id="scanMode" class="scan-mode"></p>
@@ -131,6 +171,8 @@
 
 <!-- ZXing для DataMatrix (UMD-сборка) -->
 <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
+<!-- bwip-js для генерации правильного GS1 DataMatrix (как tec-it) -->
+<script src="https://cdn.jsdelivr.net/npm/bwip-js@4.5.1/dist/bwip-js-min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -34,6 +34,10 @@
 
   const cameraBtn   = $('cameraBtn');
   const cameraInput = $('camera');
+  const liveScanBtn = $('liveScanBtn');
+  const camOverlay  = $('camOverlay');
+  const camVideo    = $('camVideo');
+  const camStopBtn  = $('camStop');
   const scanViewBtn = $('scanView');
   const scanOverlay = $('scanOverlay');
   const scanCanvas  = $('scanCanvas');
@@ -43,6 +47,14 @@
   const scanWarn = $('scanWarn');
   const cropWrap = $('cropWrap');
   const cropFrame = $('cropFrame');
+  const manualData = $('manualData');
+  const manualGenBtn = $('manualGen');
+  const statNow = $('statNow');
+  const statFrom = $('statFrom');
+  const statTo = $('statTo');
+  const statPeriod = $('statPeriod');
+  const statTable = $('statTable');
+  const statCsvBtn = $('statCsv');
 
   let originalImage = null;     // ImageData
   let originalBitmap = null;    // ImageBitmap (для поворота/масштаба)
@@ -53,6 +65,9 @@
   let selection = null;         // область кода в пикселях оригинала {x,y,w,h} или null (весь кадр)
   let cropDrag = null;          // состояние во время перетаскивания рамки/угла
   let workingCache = null;      // кэш обрезанного по выделению изображения
+  let liveReader = null;        // ZXing-ридер живого сканирования
+  let liveActive = false;       // идёт ли сейчас живое сканирование
+  let lastCountedText = null;   // текст последнего засчитанного кода (защита от двойного счёта)
 
   // ---------- UI: дроп-зона ----------
   function bindDrop() {
@@ -656,6 +671,49 @@
     return rows;
   }
 
+  // ---------- Живое сканирование камерой ----------
+  // Непрерывно читаем кадры с камеры: много попыток под разными углами/светом
+  // повышают шанс поймать плохо читаемый код (аналог многокадрового ТСД).
+  async function startLiveScan() {
+    if (typeof ZXing === 'undefined') { setStatus('ZXing не загрузился — живое сканирование недоступно.', 'err'); return; }
+    if (liveActive) return;
+    liveActive = true;
+    camOverlay.hidden = false;
+
+    const hints = new Map();
+    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+      ZXing.BarcodeFormat.DATA_MATRIX,
+      ZXing.BarcodeFormat.QR_CODE,
+    ]);
+    liveReader = new ZXing.BrowserMultiFormatReader(hints);
+    try {
+      await liveReader.decodeFromConstraints(
+        { video: { facingMode: { ideal: 'environment' } } },
+        camVideo,
+        (result) => { if (result && liveActive) onLiveDecode(result); }
+      );
+    } catch (e) {
+      setStatus('Не удалось открыть камеру: ' + (e && e.message ? e.message : e), 'err');
+      stopLiveScan();
+    }
+  }
+
+  function stopLiveScan() {
+    liveActive = false;
+    try { if (liveReader) liveReader.reset(); } catch (_) {}
+    liveReader = null;
+    camOverlay.hidden = true;
+  }
+
+  function onLiveDecode(r) {
+    liveActive = false;                 // ловим только первый успешный кадр
+    lastDecode = { text: r.getText(), format: r.getBarcodeFormat(), points: [] };
+    stopLiveScan();
+    setStatus('Код распознан камерой.', 'ok');
+    showScanView();                     // сразу показываем чистый восстановленный код
+  }
+
   // ---------- Показ кода для сканирования с экрана ----------
   // Кнопка показа видна всегда после загрузки фото; подпись зависит от того,
   // распознан код (подтверждённый вариант) или нет (лучший вариант без гарантии).
@@ -667,8 +725,8 @@
   }
 
   function showScanView() {
-    if (!originalImage) {
-      setStatus('Сначала загрузите или сфотографируйте код.', 'warn');
+    if (!originalImage && !lastDecode) {
+      setStatus('Сначала загрузите фото или введите данные кода.', 'warn');
       return;
     }
     // Подтверждённые варианты — только если код реально декодирован.
@@ -680,6 +738,7 @@
     if (scanVerified) {
       // По умолчанию показываем восстановленный код — он всегда чёткий и читается надёжнее.
       scanMode = scanImages.regen ? 'regen' : 'photo';
+      countScan(); // засчитываем успешно восстановленный код в статистику
     } else {
       // Код не распознан: готовим максимально очищенный вариант и предупредим.
       scanImages.best = buildBestEffortImage();
@@ -742,6 +801,10 @@
   // Это не новый код — это идеально чистая копия того, что реально считано с упаковки.
   function regenerateFromData() {
     if (!lastDecode || !lastDecode.text) return null;
+    // 1) Правильный GS1 DataMatrix через bwip-js (как tec-it) — предпочтительно.
+    const gs1 = bwipGS1DataMatrix(lastDecode.text, lastDecode.format);
+    if (gs1) return gs1;
+    // 2) Запасной путь: ZXing (кодирует FNC1 обычным байтом, без GS1-флага).
     try {
       let matrix;
       if (lastDecode.format === ZXing.BarcodeFormat.QR_CODE) {
@@ -754,6 +817,44 @@
       return null; // если формат не кодируется — молча остаёмся на очищенном фото
     }
   }
+
+  // Правильный GS1 DataMatrix через bwip-js: ведущий FNC1 (GS1-режим) и каждый
+  // разделитель GS (\x1d) кодируется как FNC1 — так же, как это делает tec-it.
+  function bwipGS1DataMatrix(text, format) {
+    if (typeof bwipjs === 'undefined') return null;              // библиотека не загрузилась (нет интернета)
+    if (format === ZXing.BarcodeFormat.QR_CODE) return null;     // QR оставляем ZXing-пути
+    try {
+      const GS = String.fromCharCode(29);
+      const body = text.replace(new RegExp('^' + GS), '');       // убрать ведущий GS, если есть
+      // GS1-режим только для маркировки (начинается с AI «01» — GTIN). Иначе — откат на ZXing.
+      if (!/^01\d/.test(body)) return null;
+      const parsed = '^FNC1' + body.split(GS).join('^FNC1');     // ведущий + внутренние FNC1
+      const canvas = document.createElement('canvas');
+      bwipjs.toCanvas(canvas, {
+        bcid: 'datamatrix',
+        text: parsed,
+        parsefnc: true,
+        scale: 6,
+        padding: 10,               // тихая зона вокруг
+        backgroundcolor: 'FFFFFF',
+      });
+      return canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+    } catch (e) {
+      return null;                 // при любой ошибке — откат на ZXing
+    }
+  }
+
+  // Ручной ввод: чистый код прямо из введённых/отсканированных данных (сценарий с видео).
+  function generateFromManualData() {
+    let text = (manualData.value || '').trim();
+    if (!text) { setStatus('Введите или отсканируйте данные кода.', 'warn'); return; }
+    // Разделитель можно писать как (GS) — заменим на настоящий символ FNC1/GS.
+    text = text.replace(/\(GS\)/gi, String.fromCharCode(29));
+    lastDecode = { text, format: ZXing.BarcodeFormat.DATA_MATRIX, points: [] };
+    setStatus('Код сгенерирован из введённых данных.', 'ok');
+    showScanView();
+  }
+
 
   // Рисуем BitMatrix (сетку модулей) в чёткое чёрно-белое изображение с белым полем.
   function bitMatrixToImageData(matrix, mod, quietModules) {
@@ -775,7 +876,7 @@
 
   // Готовим чистое изображение кода: вырезаем символ по углам, бинаризуем, добавляем белое поле.
   function buildScanImage() {
-    if (!lastDecode) return null;
+    if (!lastDecode || !originalImage || !dstCanvas.width) return null; // нет фото — нет фото-варианта
     const box = pointsToBox(lastDecode.points, dstCanvas.width, dstCanvas.height);
     const crop = cropCanvas(dstCanvas, box);
     const bw = otsuBinary(crop);
@@ -879,6 +980,9 @@
     scanViewBtn.addEventListener('click', showScanView);
     scanCloseBtn.addEventListener('click', hideScanView);
     scanToggleBtn.addEventListener('click', toggleScanMode);
+    manualGenBtn.addEventListener('click', generateFromManualData);
+    liveScanBtn.addEventListener('click', startLiveScan);
+    camStopBtn.addEventListener('click', stopLiveScan);
     clearSelBtn.addEventListener('click', () => {
       frameToFull();
       clearSelBtn.hidden = true;
@@ -916,6 +1020,96 @@
     });
   }
 
+  // ---------- Статистика сканирований (для коммерческого учёта) ----------
+  const SCAN_STORE_KEY = 'dmRestoreScanCounts';
+  const MONTH_NAMES = ['Январь','Февраль','Март','Апрель','Май','Июнь',
+    'Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+
+  function loadScanCounts() {
+    try { return JSON.parse(localStorage.getItem(SCAN_STORE_KEY)) || {}; }
+    catch (_) { return {}; }
+  }
+  function saveScanCounts(obj) {
+    try { localStorage.setItem(SCAN_STORE_KEY, JSON.stringify(obj)); } catch (_) {}
+  }
+  function currentMonthKey() {
+    const d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  }
+  function formatMonth(key) {
+    const [y, m] = key.split('-');
+    return (MONTH_NAMES[+m - 1] || m) + ' ' + y;
+  }
+
+  // Каждый акт восстановления = 1 скан. Дедуп по последнему коду защищает от
+  // задвоения при повторном показе/переключениях того же кода подряд.
+  function countScan() {
+    if (!lastDecode || !lastDecode.text || lastDecode.text === lastCountedText) return;
+    lastCountedText = lastDecode.text;
+    const counts = loadScanCounts();
+    const k = currentMonthKey();
+    counts[k] = (counts[k] || 0) + 1;
+    saveScanCounts(counts);
+    renderStats();
+  }
+
+  function renderStats() {
+    const counts = loadScanCounts();
+    const nowKey = currentMonthKey();
+    statNow.textContent = counts[nowKey] || 0;
+
+    const keys = Object.keys(counts).sort();          // по возрастанию для дефолтов периода
+    // Дефолтные границы периода: от самого раннего месяца до текущего.
+    if (!statFrom.value) statFrom.value = keys.length ? keys[0] : nowKey;
+    if (!statTo.value) statTo.value = nowKey;
+
+    // Таблица по убыванию (свежие сверху)
+    statTable.innerHTML = '';
+    for (const k of keys.slice().reverse()) {
+      const tr = document.createElement('tr');
+      const td1 = document.createElement('td');
+      const td2 = document.createElement('td');
+      td1.textContent = formatMonth(k);
+      td2.textContent = counts[k];
+      tr.appendChild(td1); tr.appendChild(td2);
+      statTable.appendChild(tr);
+    }
+    if (!keys.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 2; td.textContent = 'Пока нет данных';
+      td.style.color = 'var(--muted)';
+      tr.appendChild(td); statTable.appendChild(tr);
+    }
+    renderPeriodTotal();
+  }
+
+  function renderPeriodTotal() {
+    const counts = loadScanCounts();
+    const from = statFrom.value, to = statTo.value;   // строки 'YYYY-MM' сравниваются лексикографически
+    let total = 0;
+    for (const k of Object.keys(counts)) {
+      if ((!from || k >= from) && (!to || k <= to)) total += counts[k];
+    }
+    statPeriod.textContent = total;
+  }
+
+  function exportStatsCsv() {
+    const counts = loadScanCounts();
+    const from = statFrom.value, to = statTo.value;
+    const rows = [['Месяц', 'Сканирований']];
+    Object.keys(counts).sort().forEach(k => {
+      if ((!from || k >= from) && (!to || k <= to)) rows.push([k, counts[k]]);
+    });
+    const csv = rows.map(r => r.join(';')).join('\r\n');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `сканирования_${from || 'все'}_${to || 'все'}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
   // Инициализация
   function init() {
     if (typeof ZXing === 'undefined') {
@@ -924,6 +1118,10 @@
     bindDrop();
     bindControls();
     bindCrop();
+    statFrom.addEventListener('change', renderPeriodTotal);
+    statTo.addEventListener('change', renderPeriodTotal);
+    statCsvBtn.addEventListener('click', exportStatsCsv);
+    renderStats();
     refreshLabels();
   }
 
