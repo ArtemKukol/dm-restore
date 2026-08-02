@@ -65,7 +65,9 @@
   let selection = null;         // область кода в пикселях оригинала {x,y,w,h} или null (весь кадр)
   let cropDrag = null;          // состояние во время перетаскивания рамки/угла
   let workingCache = null;      // кэш обрезанного по выделению изображения
-  let liveReader = null;        // ZXing-ридер живого сканирования
+  let liveStream = null;        // MediaStream камеры
+  let liveTimer = null;         // таймер цикла декодирования
+  let liveCanvas = null;        // offscreen-канвас для обрезки кадра до рамки
   let liveActive = false;       // идёт ли сейчас живое сканирование
   let lastCountedText = null;   // текст последнего засчитанного кода (защита от двойного счёта)
 
@@ -677,38 +679,52 @@
   async function startLiveScan() {
     if (typeof ZXing === 'undefined') { setStatus('ZXing не загрузился — живое сканирование недоступно.', 'err'); return; }
     if (liveActive) return;
-    liveActive = true;
     camOverlay.hidden = false;
-
-    const hints = new Map();
-    hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-      ZXing.BarcodeFormat.DATA_MATRIX,
-      ZXing.BarcodeFormat.QR_CODE,
-    ]);
-    liveReader = new ZXing.BrowserMultiFormatReader(hints);
     try {
-      await liveReader.decodeFromConstraints(
-        { video: { facingMode: { ideal: 'environment' } } },
-        camVideo,
-        (result) => { if (result && liveActive) onLiveDecode(result); }
-      );
+      liveStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } } });
     } catch (e) {
       setStatus('Не удалось открыть камеру: ' + (e && e.message ? e.message : e), 'err');
       stopLiveScan();
+      return;
     }
+    camVideo.srcObject = liveStream;
+    try { await camVideo.play(); } catch (_) {}
+    liveActive = true;
+    scanLoop();
+  }
+
+  // Цикл: декодируем ТОЛЬКО центральную область (рамку-прицел), а не весь кадр камеры.
+  function scanLoop() {
+    if (!liveActive) return;
+    const r = decodeLiveRegion();
+    if (r) { onLiveDecode(r); return; }
+    liveTimer = setTimeout(scanLoop, 180);
+  }
+
+  function decodeLiveRegion() {
+    const vw = camVideo.videoWidth, vh = camVideo.videoHeight;
+    if (!vw || !vh) return null;
+    const side = Math.floor(Math.min(vw, vh) * 0.7);    // 70% меньшей стороны = рамка-прицел
+    const sx = Math.floor((vw - side) / 2), sy = Math.floor((vh - side) / 2);
+    if (!liveCanvas) liveCanvas = document.createElement('canvas');
+    liveCanvas.width = side; liveCanvas.height = side;
+    liveCanvas.getContext('2d').drawImage(camVideo, sx, sy, side, side, 0, 0, side, side);
+    try { return decodeCanvas(liveCanvas); } catch (_) { return null; }
   }
 
   function stopLiveScan() {
     liveActive = false;
-    try { if (liveReader) liveReader.reset(); } catch (_) {}
-    liveReader = null;
+    if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
+    if (liveStream) { liveStream.getTracks().forEach(t => t.stop()); liveStream = null; }
+    camVideo.srcObject = null;
     camOverlay.hidden = true;
   }
 
   function onLiveDecode(r) {
     liveActive = false;                 // ловим только первый успешный кадр
-    lastDecode = { text: r.getText(), format: r.getBarcodeFormat(), points: [] };
+    let text, format;
+    try { text = r.getText(); format = r.getBarcodeFormat(); } catch (_) { return; }
+    lastDecode = { text, format, points: [] };
     stopLiveScan();
     setStatus('Код распознан камерой.', 'ok');
     showScanView();                     // сразу показываем чистый восстановленный код

@@ -148,8 +148,11 @@
 
 <!-- Живое сканирование камерой -->
 <div id="camOverlay" class="cam-overlay" hidden>
-  <video id="camVideo" playsinline muted autoplay></video>
-  <p class="cam-hint">Наведите камеру на код. Держите ровно; при плохом свете — ближе.</p>
+  <div class="cam-frame">
+    <video id="camVideo" playsinline muted autoplay></video>
+    <div class="cam-reticle"></div>
+  </div>
+  <p class="cam-hint">Наведите код внутрь рамки. Держите ровно; при плохом свете — ближе.</p>
   <button id="camStop" class="scan-close">Стоп</button>
 </div>
 
