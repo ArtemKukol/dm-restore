@@ -72,8 +72,10 @@
   let liveTimer = null;         // таймер цикла декодирования
   let liveCanvas = null;        // offscreen-канвас для обрезки кадра до рамки
   let liveActive = false;       // идёт ли сейчас живое сканирование
-  let zoomMode = 'digital';     // 'hw' — зум камеры, 'digital' — обрезка+масштаб
-  let digitalZoom = 1;          // текущий цифровой зум
+  let zoomFactor = 1;           // положение ползунка (1×..5×)
+  let digitalZoom = 1;          // множитель цифрового зума (1, когда работает аппаратный)
+  let hwZoomCaps = null;        // возможности аппаратного зума камеры {min,max,step} или null
+  let hwZoomOk = false;         // подтверждён ли рабочий аппаратный зум
   let lastCountedText = null;   // текст последнего засчитанного кода (защита от двойного счёта)
 
   // ---------- UI: дроп-зона ----------
@@ -700,43 +702,53 @@
     scanLoop();
   }
 
-  // Настройка зума: аппаратный (если камера умеет) или цифровой (обрезка + масштаб).
+  // Настройка зума при старте камеры. Ползунок всегда единый: 1×..5×.
   function setupZoom(track) {
+    zoomFactor = 1;
     digitalZoom = 1;
+    hwZoomOk = false;
+    hwZoomCaps = null;
     camVideo.style.transform = 'scale(1)';
-    let caps = null;
-    try { caps = track && track.getCapabilities ? track.getCapabilities() : null; } catch (_) {}
-    if (caps && caps.zoom && (caps.zoom.max || 0) > (caps.zoom.min || 0)) {
-      zoomMode = 'hw';
-      camZoom.min = caps.zoom.min;
-      camZoom.max = caps.zoom.max;
-      camZoom.step = caps.zoom.step || 0.1;
-      let cur = caps.zoom.min;
-      try { cur = track.getSettings().zoom || caps.zoom.min; } catch (_) {}
-      camZoom.value = cur;
-    } else {
-      zoomMode = 'digital';
-      camZoom.min = 1; camZoom.max = 4; camZoom.step = 0.1; camZoom.value = 1;
-    }
+    camZoom.min = 1; camZoom.max = 5; camZoom.step = 0.1; camZoom.value = 1;
+    try {
+      const caps = track && track.getCapabilities ? track.getCapabilities() : null;
+      if (caps && caps.zoom && (caps.zoom.max || 0) > (caps.zoom.min || 0)) {
+        hwZoomCaps = caps.zoom;
+        hwZoomOk = true;              // фактически проверим при первом применении
+      }
+    } catch (_) {}
     updateZoomLabel();
   }
 
   function onZoomInput() {
-    const v = +camZoom.value;
-    if (zoomMode === 'hw' && liveTrack) {
-      try { liveTrack.applyConstraints({ advanced: [{ zoom: v }] }); } catch (_) {}
-    } else {
-      digitalZoom = v;
-      camVideo.style.transform = 'scale(' + v + ')';
-    }
+    zoomFactor = +camZoom.value;
     updateZoomLabel();
+    applyZoom(zoomFactor);
   }
 
-  // Подпись зума нормируем к 1.0× (для аппаратного делим на минимум камеры).
+  // Пробуем аппаратный зум и ПРОВЕРЯЕМ, что он реально применился; иначе — цифровой.
+  async function applyZoom(factor) {
+    if (hwZoomCaps && hwZoomOk && liveTrack) {
+      const c = hwZoomCaps;
+      const z = c.min + (factor - 1) / 4 * (c.max - c.min); // 1×..5× → диапазон камеры
+      try {
+        await liveTrack.applyConstraints({ advanced: [{ zoom: z }] });
+        const applied = liveTrack.getSettings ? liveTrack.getSettings().zoom : null;
+        if (applied == null) throw new Error('zoom не применился');
+        digitalZoom = 1;             // аппаратный сработал — цифровой не нужен
+        camVideo.style.transform = 'scale(1)';
+        return;
+      } catch (_) {
+        hwZoomOk = false;            // аппаратный не работает — переходим на цифровой
+      }
+    }
+    // Цифровой зум: масштабируем видео и сужаем область декодирования (в decodeLiveRegion).
+    digitalZoom = factor;
+    camVideo.style.transform = 'scale(' + factor + ')';
+  }
+
   function updateZoomLabel() {
-    const v = +camZoom.value;
-    const ratio = zoomMode === 'hw' ? v / (+camZoom.min || 1) : v;
-    camZoomVal.textContent = ratio.toFixed(1) + '×';
+    camZoomVal.textContent = zoomFactor.toFixed(1) + '×';
   }
 
   // Цикл: декодируем ТОЛЬКО центральную область (рамку-прицел), а не весь кадр камеры.
@@ -751,9 +763,9 @@
     const vw = camVideo.videoWidth, vh = camVideo.videoHeight;
     if (!vw || !vh) return null;
     const base = Math.min(vw, vh) * 0.7;                 // рамка-прицел = 70% меньшей стороны
-    // Цифровой зум: обрезаем область меньше (base/зум) — код заполняет рамку сильнее.
-    // Аппаратный зум уже увеличил кадр, поэтому обрезаем как есть.
-    const side = Math.floor(zoomMode === 'digital' ? base / digitalZoom : base);
+    // При цифровом зуме обрезаем область меньше (base/зум) — код заполняет рамку сильнее.
+    // При аппаратном зуме digitalZoom = 1 (кадр уже увеличен камерой).
+    const side = Math.floor(base / digitalZoom);
     const sx = Math.floor((vw - side) / 2), sy = Math.floor((vh - side) / 2);
     if (!liveCanvas) liveCanvas = document.createElement('canvas');
     liveCanvas.width = side; liveCanvas.height = side;
@@ -767,6 +779,9 @@
     if (liveStream) { liveStream.getTracks().forEach(t => t.stop()); liveStream = null; }
     liveTrack = null;
     digitalZoom = 1;
+    zoomFactor = 1;
+    hwZoomOk = false;
+    hwZoomCaps = null;
     camVideo.style.transform = 'scale(1)';
     camVideo.srcObject = null;
     camOverlay.hidden = true;
