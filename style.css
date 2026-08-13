@@ -328,6 +328,8 @@ footer a { color: var(--muted); }
   width: 92vmin;
   max-width: 560px;
   aspect-ratio: 1 / 1;
+  overflow: hidden;       /* чтобы масштабированное видео (цифровой зум) не выходило за рамку */
+  border-radius: 14px;
 }
 .cam-frame video {
   width: 100%;
@@ -348,6 +350,21 @@ footer a { color: var(--muted); }
   border-radius: 10px;
   box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.4);
   pointer-events: none;
+}
+.cam-zoom {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 92vmin;
+  max-width: 560px;
+}
+.cam-zoom-ico { font-size: 18px; }
+.cam-zoom input[type="range"] { flex: 1; }
+#camZoomVal {
+  color: #e6e9ef;
+  font-variant-numeric: tabular-nums;
+  min-width: 46px;
+  text-align: right;
 }
 .cam-hint {
   color: #e6e9ef;

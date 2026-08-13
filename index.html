@@ -152,7 +152,12 @@
     <video id="camVideo" playsinline muted autoplay></video>
     <div class="cam-reticle"></div>
   </div>
-  <p class="cam-hint">Наведите код внутрь рамки. Держите ровно; при плохом свете — ближе.</p>
+  <div class="cam-zoom">
+    <span class="cam-zoom-ico">🔍</span>
+    <input type="range" id="camZoom" min="1" max="4" step="0.1" value="1" />
+    <span id="camZoomVal">1.0×</span>
+  </div>
+  <p class="cam-hint">Наведите код внутрь рамки. Зумом подстройте под размер кода.</p>
   <button id="camStop" class="scan-close">Стоп</button>
 </div>
 

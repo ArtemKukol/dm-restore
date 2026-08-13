@@ -38,6 +38,8 @@
   const camOverlay  = $('camOverlay');
   const camVideo    = $('camVideo');
   const camStopBtn  = $('camStop');
+  const camZoom     = $('camZoom');
+  const camZoomVal  = $('camZoomVal');
   const scanViewBtn = $('scanView');
   const scanOverlay = $('scanOverlay');
   const scanCanvas  = $('scanCanvas');
@@ -66,9 +68,12 @@
   let cropDrag = null;          // состояние во время перетаскивания рамки/угла
   let workingCache = null;      // кэш обрезанного по выделению изображения
   let liveStream = null;        // MediaStream камеры
+  let liveTrack = null;         // видеотрек (для аппаратного зума)
   let liveTimer = null;         // таймер цикла декодирования
   let liveCanvas = null;        // offscreen-канвас для обрезки кадра до рамки
   let liveActive = false;       // идёт ли сейчас живое сканирование
+  let zoomMode = 'digital';     // 'hw' — зум камеры, 'digital' — обрезка+масштаб
+  let digitalZoom = 1;          // текущий цифровой зум
   let lastCountedText = null;   // текст последнего засчитанного кода (защита от двойного счёта)
 
   // ---------- UI: дроп-зона ----------
@@ -689,8 +694,49 @@
     }
     camVideo.srcObject = liveStream;
     try { await camVideo.play(); } catch (_) {}
+    liveTrack = liveStream.getVideoTracks()[0] || null;
+    setupZoom(liveTrack);
     liveActive = true;
     scanLoop();
+  }
+
+  // Настройка зума: аппаратный (если камера умеет) или цифровой (обрезка + масштаб).
+  function setupZoom(track) {
+    digitalZoom = 1;
+    camVideo.style.transform = 'scale(1)';
+    let caps = null;
+    try { caps = track && track.getCapabilities ? track.getCapabilities() : null; } catch (_) {}
+    if (caps && caps.zoom && (caps.zoom.max || 0) > (caps.zoom.min || 0)) {
+      zoomMode = 'hw';
+      camZoom.min = caps.zoom.min;
+      camZoom.max = caps.zoom.max;
+      camZoom.step = caps.zoom.step || 0.1;
+      let cur = caps.zoom.min;
+      try { cur = track.getSettings().zoom || caps.zoom.min; } catch (_) {}
+      camZoom.value = cur;
+    } else {
+      zoomMode = 'digital';
+      camZoom.min = 1; camZoom.max = 4; camZoom.step = 0.1; camZoom.value = 1;
+    }
+    updateZoomLabel();
+  }
+
+  function onZoomInput() {
+    const v = +camZoom.value;
+    if (zoomMode === 'hw' && liveTrack) {
+      try { liveTrack.applyConstraints({ advanced: [{ zoom: v }] }); } catch (_) {}
+    } else {
+      digitalZoom = v;
+      camVideo.style.transform = 'scale(' + v + ')';
+    }
+    updateZoomLabel();
+  }
+
+  // Подпись зума нормируем к 1.0× (для аппаратного делим на минимум камеры).
+  function updateZoomLabel() {
+    const v = +camZoom.value;
+    const ratio = zoomMode === 'hw' ? v / (+camZoom.min || 1) : v;
+    camZoomVal.textContent = ratio.toFixed(1) + '×';
   }
 
   // Цикл: декодируем ТОЛЬКО центральную область (рамку-прицел), а не весь кадр камеры.
@@ -704,7 +750,10 @@
   function decodeLiveRegion() {
     const vw = camVideo.videoWidth, vh = camVideo.videoHeight;
     if (!vw || !vh) return null;
-    const side = Math.floor(Math.min(vw, vh) * 0.7);    // 70% меньшей стороны = рамка-прицел
+    const base = Math.min(vw, vh) * 0.7;                 // рамка-прицел = 70% меньшей стороны
+    // Цифровой зум: обрезаем область меньше (base/зум) — код заполняет рамку сильнее.
+    // Аппаратный зум уже увеличил кадр, поэтому обрезаем как есть.
+    const side = Math.floor(zoomMode === 'digital' ? base / digitalZoom : base);
     const sx = Math.floor((vw - side) / 2), sy = Math.floor((vh - side) / 2);
     if (!liveCanvas) liveCanvas = document.createElement('canvas');
     liveCanvas.width = side; liveCanvas.height = side;
@@ -716,6 +765,9 @@
     liveActive = false;
     if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
     if (liveStream) { liveStream.getTracks().forEach(t => t.stop()); liveStream = null; }
+    liveTrack = null;
+    digitalZoom = 1;
+    camVideo.style.transform = 'scale(1)';
     camVideo.srcObject = null;
     camOverlay.hidden = true;
   }
@@ -999,6 +1051,7 @@
     manualGenBtn.addEventListener('click', generateFromManualData);
     liveScanBtn.addEventListener('click', startLiveScan);
     camStopBtn.addEventListener('click', stopLiveScan);
+    camZoom.addEventListener('input', onZoomInput);
     clearSelBtn.addEventListener('click', () => {
       frameToFull();
       clearSelBtn.hidden = true;
