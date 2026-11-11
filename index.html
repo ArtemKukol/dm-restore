@@ -1,186 +1,302 @@
 <!doctype html>
 <html lang="ru">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>DM Restore — восстановление DataMatrix «Честного знака»</title>
-<link rel="stylesheet" href="style.css" />
-</head>
-<body>
-<header>
-  <h1>DM Restore <span class="version">v1.0</span></h1>
-  <p class="sub">Восстановление повреждённых DataMatrix-кодов маркировки (пиво / «Честный знак»). Локально в браузере.</p>
-</header>
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="theme-color" content="#101827" />
+		<title>Бета-тестирование завершено</title>
 
-<main>
-  <section class="card drop" id="drop">
-    <input type="file" id="file" accept="image/*" hidden />
-    <input type="file" id="camera" accept="image/*" capture="environment" hidden />
-    <p><button id="cameraBtn" class="camera-btn">📷 Сфотографировать код</button></p>
-    <p><button id="liveScanBtn" class="camera-btn camera-btn-alt">🎥 Сканировать камерой</button></p>
-    <p>или перетащите фото сюда / <button id="pickBtn" class="link">выберите файл</button></p>
-    <p class="hint">Снимайте код крупно, без бликов, перпендикулярно.</p>
-  </section>
+		<style>
+			:root {
+				--bg: #0b1220;
+				--text: #f3f6fc;
+				--muted: #aab7ca;
+				--accent: #62d6b3;
+				--line: rgba(255, 255, 255, 0.1);
+			}
 
-  <section class="card" id="manualCard">
-    <details>
-      <summary>Уже есть данные кода? Сгенерировать чистый код без фото</summary>
-      <p class="hint">
-        Вставьте строку кода или отсканируйте её сканером / ТСД прямо в это поле —
-        программа сделает чистый GS1 DataMatrix для сканирования на кассе.
-      </p>
-      <textarea id="manualData" rows="3" placeholder="Например: 0104600000000000212112345678(GS)93Xk7Q"></textarea>
-      <div class="manual-actions">
-        <button id="manualGen" class="primary">Сгенерировать чистый код</button>
-      </div>
-    </details>
-  </section>
+			* {
+				box-sizing: border-box;
+			}
 
-  <section class="card" id="statsCard">
-    <details>
-      <summary>📊 Статистика сканирований (для отчётности)</summary>
-      <p class="stat-now">За текущий месяц: <strong id="statNow">0</strong></p>
-      <div class="stat-period">
-        <label>С <input type="month" id="statFrom" /></label>
-        <label>по <input type="month" id="statTo" /></label>
-        <span class="stat-total">Всего за период: <strong id="statPeriod">0</strong></span>
-        <button id="statCsv" class="link">Скачать CSV</button>
-      </div>
-      <table class="stat-table">
-        <thead><tr><th>Месяц</th><th>Сканирований</th></tr></thead>
-        <tbody id="statTable"></tbody>
-      </table>
-      <p class="hint">Считается каждый успешно восстановленный код, показанный для сканирования (повторный показ того же кода подряд счёт не удваивает). Данные хранятся на этом устройстве (localStorage).</p>
-    </details>
-  </section>
+			body {
+				margin: 0;
+				min-height: 100vh;
+				padding: 28px 16px;
+				display: grid;
+				place-items: center;
+				color: var(--text);
+				background:
+					radial-gradient(
+						circle at 15% 15%,
+						rgba(58, 116, 154, 0.22),
+						transparent 34%
+					),
+					radial-gradient(
+						circle at 85% 85%,
+						rgba(49, 155, 125, 0.16),
+						transparent 32%
+					),
+					var(--bg);
+				font-family:
+					-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial,
+					sans-serif;
+			}
 
-  <section class="card" id="workspace" hidden>
-    <div class="canvases">
-      <figure>
-        <figcaption>Оригинал — двигайте рамку на код, тяните за углы</figcaption>
-        <div class="crop-wrap" id="cropWrap">
-          <canvas id="src"></canvas>
-          <div class="crop-frame" id="cropFrame" hidden>
-            <span class="crop-handle" data-h="nw"></span>
-            <span class="crop-handle" data-h="ne"></span>
-            <span class="crop-handle" data-h="sw"></span>
-            <span class="crop-handle" data-h="se"></span>
-          </div>
-        </div>
-      </figure>
-      <figure>
-        <figcaption>После препроцессинга</figcaption>
-        <canvas id="dst"></canvas>
-      </figure>
-    </div>
+			.wrap {
+				width: 100%;
+				max-width: 760px;
+			}
 
-    <div class="controls">
-      <label>Яркость <span id="brightnessV">0</span>
-        <input type="range" id="brightness" min="-100" max="100" value="0" />
-      </label>
-      <label>Контраст <span id="contrastV">0</span>
-        <input type="range" id="contrast" min="-100" max="200" value="0" />
-      </label>
-      <label>Резкость <span id="sharpenV">0</span>
-        <input type="range" id="sharpen" min="0" max="5" step="0.1" value="0" />
-      </label>
-      <label>Размытие (px) <span id="blurV">0</span>
-        <input type="range" id="blur" min="0" max="5" step="0.5" value="0" />
-      </label>
-      <label>Порог бинаризации <span id="thresholdV">авто</span>
-        <input type="range" id="threshold" min="0" max="255" value="128" disabled />
-      </label>
-      <label class="row">
-        <input type="checkbox" id="binarize" /> Бинаризация
-      </label>
-      <label class="row">
-        <input type="checkbox" id="adaptive" checked /> Адаптивный порог (Sauvola-like)
-      </label>
-      <label class="row">
-        <input type="checkbox" id="invert" /> Инвертировать
-      </label>
-      <label>Поворот ° <span id="rotateV">0</span>
-        <input type="range" id="rotate" min="0" max="360" step="5" value="0" />
-      </label>
-      <label>Масштаб <span id="scaleV">1.0×</span>
-        <input type="range" id="scale" min="0.5" max="4" step="0.1" value="1.5" />
-      </label>
-    </div>
+			.card {
+				padding: clamp(26px, 6vw, 54px);
+				border: 1px solid var(--line);
+				border-radius: 24px;
+				background: rgba(20, 31, 49, 0.94);
+				box-shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
+			}
 
-    <div class="actions">
-      <button id="decode" class="primary">Распознать</button>
-      <button id="autoTry">Авто-перебор препроцессов</button>
-      <button id="scanView" class="scan-cta" hidden>📱 Показать код для сканирования</button>
-      <button id="clearSel" hidden>Рамка на весь кадр</button>
-      <button id="reset">Сбросить</button>
-      <button id="newFile">Другое фото</button>
-    </div>
+			.badge {
+				display: inline-flex;
+				align-items: center;
+				gap: 9px;
+				padding: 8px 13px;
+				border: 1px solid rgba(98, 214, 179, 0.28);
+				border-radius: 999px;
+				color: var(--accent);
+				background: rgba(98, 214, 179, 0.08);
+				font-size: 13px;
+				font-weight: 650;
+			}
 
-    <div id="status" class="status"></div>
+			.dot {
+				width: 8px;
+				height: 8px;
+				border-radius: 50%;
+				background: var(--accent);
+				box-shadow: 0 0 14px rgba(98, 214, 179, 0.8);
+			}
 
-    <div id="result" class="result" hidden>
-      <h2>Результат</h2>
-      <pre id="raw"></pre>
-      <h3>Разбор GS1</h3>
-      <table id="parsed"><tbody></tbody></table>
-      <p class="hint">
-        Проверить статус кода в обороте можно через ЛК «Честного знака» или мобильное приложение —
-        сверкой по GTIN + серийному номеру. Локальная программа подпись ЦРПТ не валидирует.
-      </p>
-    </div>
-  </section>
+			h1 {
+				margin: 25px 0 16px;
+				font-size: clamp(30px, 6vw, 46px);
+				line-height: 1.08;
+				letter-spacing: -0.035em;
+			}
 
-  <section class="card hint-card">
-    <h3>Как пользоваться</h3>
-    <ol>
-      <li>Сфотографируйте код крупно, без бликов, перпендикулярно.</li>
-      <li>Если декодер с первой попытки не справился — нажмите «Авто-перебор» (программа прогонит ~30 комбинаций фильтров).</li>
-      <li>Если код декодировался — программа покажет GTIN, серийный номер и крипто-хвост.</li>
-      <li>Нажмите «Показать код для сканирования» — программа выведет на весь экран восстановленный код (перекодированный из считанных данных) или очищенное фото. Наведите сканер кассы прямо на экран телефона.</li>
-      <li>Если данные не считываются даже после перебора — повреждение скорее всего больше 25–30% модулей (предел Reed–Solomon в ECC 200), и восстановить нечего: считать данные не удалось. Легальный путь — перемаркировка в «Честном знаке».</li>
-    </ol>
-  </section>
-</main>
+			.lead {
+				margin: 0;
+				max-width: 610px;
+				color: var(--muted);
+				font-size: clamp(16px, 2.5vw, 18px);
+				line-height: 1.7;
+			}
 
-<footer>
-  <p>Работает оффлайн. Декодер: <a href="https://github.com/zxing-js/library" target="_blank" rel="noopener">@zxing/library</a>.</p>
-</footer>
+			.note {
+				margin-top: 28px;
+				padding: 18px 20px;
+				border-left: 3px solid var(--accent);
+				border-radius: 0 12px 12px 0;
+				background: rgba(98, 214, 179, 0.07);
+				color: #dce8f0;
+				line-height: 1.65;
+			}
 
-<!-- Живое сканирование камерой -->
-<div id="camOverlay" class="cam-overlay" hidden>
-  <div class="cam-frame">
-    <video id="camVideo" playsinline muted autoplay></video>
-    <div class="cam-reticle"></div>
-  </div>
-  <div class="cam-zoom">
-    <span class="cam-zoom-ico">🔍</span>
-    <input type="range" id="camZoom" min="1" max="4" step="0.1" value="1" />
-    <span id="camZoomVal">1.0×</span>
-  </div>
-  <p class="cam-hint">Наведите код внутрь рамки. Зумом подстройте под размер кода.</p>
-  <button id="camStop" class="scan-close">Стоп</button>
-</div>
+			.divider {
+				height: 1px;
+				margin: 34px 0;
+				background: var(--line);
+			}
 
-<!-- Полноэкранный режим показа кода для сканирования с экрана -->
-<div id="scanOverlay" class="scan-overlay" hidden>
-  <p id="scanMode" class="scan-mode"></p>
-  <div id="scanWarn" class="scan-warn" hidden>
-    ⚠️ Программе не удалось распознать код, читаемость <b>не подтверждена</b>.
-    Показан максимально очищенный вариант — он может не отсканироваться.
-    Если касса не берёт код, нажмите «Авто-перебор» или переснимите фото крупнее и без бликов.
-  </div>
-  <canvas id="scanCanvas"></canvas>
-  <p class="scan-hint">Наведите сканер кассы на код. Поставьте яркость экрана на максимум.</p>
-  <div class="scan-buttons">
-    <button id="scanToggle" class="scan-toggle" hidden></button>
-    <button id="scanClose" class="scan-close">Закрыть</button>
-  </div>
-</div>
+			.services-label {
+				margin: 0 0 10px;
+				color: var(--accent);
+				font-size: 12px;
+				font-weight: 700;
+				letter-spacing: 0.12em;
+				text-transform: uppercase;
+			}
 
-<!-- ZXing для DataMatrix (UMD-сборка) -->
-<script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
-<!-- bwip-js для генерации правильного GS1 DataMatrix (как tec-it) -->
-<script src="https://cdn.jsdelivr.net/npm/bwip-js@4.5.1/dist/bwip-js-min.js"></script>
-<script src="app.js"></script>
-</body>
+			h2 {
+				margin: 0 0 12px;
+				font-size: clamp(22px, 4vw, 29px);
+				letter-spacing: -0.02em;
+			}
+
+			.services-text {
+				margin: 0;
+				color: var(--muted);
+				line-height: 1.7;
+			}
+
+			/* Список услуг */
+			.examples {
+				display: grid;
+				grid-template-columns: 1fr 1fr;
+				gap: 10px 24px;
+				margin: 20px 0 0;
+				padding-left: 20px;
+				color: #dce5f2;
+				line-height: 1.8;
+			}
+
+			.examples li {
+				padding: 0;
+				border: none;
+				background: none;
+				font-size: 15px;
+			}
+
+			.referral {
+				margin-top: 23px;
+				padding: 17px 19px;
+				border: 1px solid rgba(98, 214, 179, 0.22);
+				border-radius: 14px;
+				background: rgba(98, 214, 179, 0.06);
+				line-height: 1.65;
+			}
+
+			/* Контактные кнопки */
+			.contacts {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 12px;
+				margin-top: 25px;
+			}
+
+			.button {
+				display: inline-flex;
+				min-height: 48px;
+				align-items: center;
+				justify-content: center;
+				padding: 0 19px;
+				border-radius: 12px;
+				color: #071711;
+				background: var(--accent);
+				font-weight: 700;
+				text-decoration: none;
+				transition:
+					transform 0.18s ease,
+					filter 0.18s ease;
+			}
+
+			.button.secondary {
+				color: var(--text);
+				border: 1px solid var(--line);
+				background: rgba(255, 255, 255, 0.06);
+			}
+
+			.button:hover {
+				transform: translateY(-2px);
+				filter: brightness(1.06);
+			}
+
+			.contact-hint {
+				margin: 15px 0 0;
+				color: var(--muted);
+				font-size: 13px;
+				line-height: 1.6;
+			}
+
+			footer {
+				margin-top: 22px;
+				color: #7f8da3;
+				font-size: 12px;
+				text-align: center;
+			}
+
+			@media (max-width: 520px) {
+				.examples {
+					grid-template-columns: 1fr;
+				}
+
+				.contacts {
+					display: grid;
+				}
+
+				.button {
+					width: 100%;
+				}
+			}
+		</style>
+	</head>
+
+	<body>
+		<main class="wrap">
+			<section class="card">
+				<div class="badge">
+					<span class="dot"></span>
+					Бета-тестирование завершено
+				</div>
+
+				<h1>Спасибо за участие!</h1>
+
+				<p class="lead">
+					Коллеги, бета-тестирование приложения по восстановлению повреждённых
+					кодов DataMatrix завершено. Спасибо всем, кто проверял работу
+					программы и делился обратной связью.
+				</p>
+
+				<div class="note">
+					Сейчас мы работаем над улучшением функциональности и подготовкой
+					приложения к релизу. Релизная версия будет доступна по этой же ссылке.
+				</div>
+
+				<div class="divider"></div>
+
+				<p class="services-label">Веб-разработка</p>
+
+				<h2>Нужен сайт для вашего бизнеса?</h2>
+
+				<p class="services-text">
+					Наша команда разрабатывает сайты под задачи бизнеса — от простых
+					сайтов-визиток до полноценных интернет-магазинов и сложных
+					веб-проектов.
+				</p>
+
+				<ul class="examples">
+					<li>Сайты-визитки</li>
+					<li>Корпоративные сайты</li>
+					<li>Лендинги</li>
+					<li>Интернет-магазины</li>
+					<li>Каталоги товаров и услуг</li>
+					<li>Индивидуальные веб-сервисы</li>
+				</ul>
+
+				<div class="referral">
+					<strong>Рекомендуйте нас — получайте вознаграждение.</strong>
+					<br />
+					Если по вашей рекомендации к нам обратится клиент и закажет проект, мы
+					выплатим вам процент от стоимости заказа. Условия обсудим лично.
+				</div>
+
+				<div class="contacts">
+					<a
+						class="button"
+						href="https://t.me/Kukol_Artem"
+						target="_blank"
+						rel="noopener noreferrer"
+					>
+						Написать в Telegram
+					</a>
+
+					<a
+						class="button secondary"
+						href="https://max.ru/u/f9LHodD0cOJjj2bvb6uB63_deYj3gL1l8af86sSfzm_aweLFxDjdFr-9Kk4"
+						target="_blank"
+						rel="noopener noreferrer"
+					>
+						Написать в MAX
+					</a>
+				</div>
+
+				<p class="contact-hint">
+					Чтобы обсудить сайт или партнёрскую рекомендацию, напишите нам в
+					личные сообщения.
+				</p>
+			</section>
+
+			<footer>Спасибо, что помогаете делать продукт лучше.</footer>
+		</main>
+	</body>
 </html>
